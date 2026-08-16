@@ -44,7 +44,7 @@ In short: the guard never *judges* whether a plugin is "good". It guarantees tha
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # From the tarball stored in the repo:
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.1.0.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.0.tgz
 ```
 
 Restart `dsh web`. This is a standard **bundle plugin**: it joins the profile layer stack and takes effect automatically. (Once published to npm, `dsh plugin --profile web add dsh-plugin-guard` also works.)
@@ -201,7 +201,7 @@ Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插�
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # 或从仓库里的安装包：
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.1.0.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.0.tgz
 ```
 
 重启 `dsh web`。这是标准 **bundle 插件**：加入 profile 层栈自动生效。(发布到 npm 后 `dsh plugin --profile web add dsh-plugin-guard` 也可用。)
