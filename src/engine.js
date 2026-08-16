@@ -9,13 +9,16 @@ import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { join, dirname } from 'node:path'
 import {
-  dshHome, profilesDir, profileDir, rollbacksRoot, guardLogsDir, guardConfigPath, SNAPSHOT_FILES,
+  dshHome, profilesDir, profileDir, rollbacksRoot, guardDir, guardLogsDir, guardConfigPath, SNAPSHOT_FILES,
 } from './layout.js'
 
 export const DEFAULT_KEEP_SNAPSHOTS = 10
 export const MIN_KEEP_SNAPSHOTS = 2
 export const MAX_KEEP_SNAPSHOTS = 100
 export const DEFAULT_PORT = 3080
+/** How many boot/server logs, incident reports and resolved-incident markers
+ * to keep per category; the oldest are pruned on every snapshot/incident. */
+export const DEFAULT_KEEP_LOGS = 30
 
 /** Read the guard settings file ($DSH_HOME/guard/config.json). Never throws;
  * malformed/missing config falls back to defaults. */
@@ -108,19 +111,26 @@ export function resolvePnpmCommand() {
   return null
 }
 
-function quoteCmdArg(a) {
-  return `"${String(a).replace(/"/g, '""')}"`
+/** Windows cmd token: quote only when it contains whitespace/quotes. A bare
+ * token stays unquoted so cmd still resolves it via PATH (a quoted bare name
+ * like "pnpm" makes cmd skip the PATH lookup). */
+function cmdToken(s) {
+  return /[\s"]/.test(s) ? `"${String(s).replace(/"/g, '""')}"` : String(s)
 }
 
 /** Run pnpm. On Windows the launcher is a .cmd, so it is invoked through
- * cmd.exe explicitly (no `shell: true`, no unescaped-argument warning). */
+ * cmd.exe explicitly (no `shell: true`, no unescaped-argument warning).
+ * Tokens are quoted only when they contain whitespace/quotes: quoting a bare
+ * command name breaks cmd's PATH lookup, and Node's spawnSync command-line
+ * escaping additionally mangles per-arg quotes passed to cmd /c. The probe in
+ * resolvePnpmCommand already uses this unquoted shape and works. */
 export function runPnpm(args, cwd, pnpmCommand) {
   const command = pnpmCommand ?? resolvePnpmCommand()
   if (!command) return { ok: false, status: null, output: 'pnpm not found (PATH, DSH_GUARD_PNPM, or a local node_modules/.bin)' }
   const result = isWin()
     ? spawnSync(
         'cmd.exe',
-        ['/d', '/s', '/c', `${quoteCmdArg(command)} ${args.map(quoteCmdArg).join(' ')}`],
+        ['/d', '/s', '/c', [cmdToken(command), ...args.map(cmdToken)].join(' ')],
         { cwd, encoding: 'utf8', timeout: 10 * 60 * 1000 },
       )
     : spawnSync(command, args, { cwd, encoding: 'utf8', timeout: 10 * 60 * 1000 })
@@ -202,6 +212,7 @@ export function snapshotProfile(profile, { tag = '', reason = '', force = false 
 
   writeManifest(snapDir, profile, tag, reason, saved, resolvePnpmCommand())
   pruneSnapshots(profile, resolveKeepSnapshots())
+  pruneGuardArtifacts()
   return { profile, stamp: newStamp }
 }
 
@@ -224,6 +235,34 @@ export function pruneSnapshots(profile, keep) {
     .filter((e) => e.isDirectory())
     .sort((a, b) => b.name.localeCompare(a.name))
   for (const d of dirs.slice(keep)) rmSync(join(root, d.name), { recursive: true, force: true })
+}
+
+/** Bounded retention for the artifacts that would otherwise grow forever:
+ * per-run boot/server logs, incident reports and resolved-incident markers.
+ * Keeps the newest `keep` files of each category (stamp names sort
+ * chronologically) and deletes the rest. `last-boot.txt` and
+ * `pending-incident.json` are intentionally left untouched. Returns how many
+ * files were removed. */
+export function pruneGuardArtifacts(keep = DEFAULT_KEEP_LOGS) {
+  const n = Math.max(1, Math.floor(Number(keep) || DEFAULT_KEEP_LOGS))
+  const groups = [
+    { dir: guardLogsDir(), re: /^boot-.*\.log$/ },
+    { dir: guardLogsDir(), re: /^server-.*\.out\.log$/ },
+    { dir: guardLogsDir(), re: /^server-.*\.err\.log$/ },
+    { dir: guardLogsDir(), re: /^incident-.*\.md$/ },
+    { dir: guardDir(), re: /^resolved-incident-.*\.json$/ },
+  ]
+  let removed = 0
+  for (const { dir, re } of groups) {
+    if (!existsSync(dir)) continue
+    let files
+    try { files = readdirSync(dir) } catch { continue }
+    const matched = files.filter((f) => re.test(f)).sort()
+    for (const f of matched.slice(0, Math.max(0, matched.length - n))) {
+      try { rmSync(join(dir, f), { force: true }); removed++ } catch { /* best effort */ }
+    }
+  }
+  return removed
 }
 
 export function listSnapshots(profile) {
@@ -283,12 +322,17 @@ export function restoreSnapshot(profile, snapshotDir, { skipInstall = false } = 
     else if (existsSync(dst)) rmSync(dst, { force: true })
   }
   let pnpm = null
+  let prune = null
   if (!skipInstall) {
     const manifest = readManifest(snapshotDir)
     const command = manifest?.pnpm && existsSync(manifest.pnpm) ? manifest.pnpm : null
     pnpm = runPnpm(['install', '--frozen-lockfile'], dir, command)
+    // pnpm install --frozen-lockfile leaves orphaned .bin links for packages
+    // removed from the bundle stack ("Already up to date" does not prune), so
+    // run pnpm prune after a successful install to reconcile node_modules.
+    if (pnpm.ok) prune = runPnpm(['prune'], dir, command)
   }
-  return { restored: SNAPSHOT_FILES, pnpm }
+  return { restored: SNAPSHOT_FILES, pnpm, prune }
 }
 
 export { stamp, sha256File }

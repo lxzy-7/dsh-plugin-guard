@@ -19,10 +19,21 @@ param(
     [int]$RetryWaitSec = 30,
     [int]$Port = 3080,
     [string]$Profile = "web",
-    [string]$HarnessRoot = ""
+    [string]$HarnessRoot = "",
+    [string]$ServerArgs = ""
 )
 
 $ErrorActionPreference = "Continue"
+
+# Force UTF-8 end-to-end for log files. Windows PowerShell 5.1's
+# Add-Content/Set-Content default to the system ANSI code page (GBK on zh-CN)
+# and decode native-child stdout with the console codepage, so Chinese in the
+# guard CLI output becomes mojibake in the logs and incident reports. Pinning
+# both sides to UTF-8 keeps every log valid UTF-8. The script file itself
+# stays ASCII (PS 5.1 parses it as ANSI), only the log output is UTF-8.
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+
 if (-not $HarnessRoot) { $HarnessRoot = Split-Path -Parent $PSScriptRoot }
 $HarnessRoot = $HarnessRoot.Trim().TrimEnd([char]34, [char]39, [char]92)  # strip stray quote/trailing slash
 if (-not $env:DSH_HOME -or $env:DSH_HOME.Trim() -eq "") {
@@ -44,11 +55,11 @@ $serverErr = Join-Path $logDir ("server-" + $stamp + ".err.log")
 $statusFile = Join-Path $logDir "last-boot.txt"
 
 function Log([string]$msg) {
-    Add-Content -Path $bootLog -Value ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $msg)
+    Add-Content -Path $bootLog -Value ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $msg) -Encoding UTF8
 }
 function Set-Status([string]$status, [string]$note) {
     ("{0} {1} {2} {3}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $status, $note, "(log: $stamp)") |
-        Set-Content -Path $statusFile
+        Set-Content -Path $statusFile -Encoding UTF8
 }
 function Test-Health {
     try {
@@ -61,19 +72,32 @@ function Invoke-Guard([string[]]$cliArgs) {
     if ($out) { foreach ($line in ($out -split "`r?`n")) { if ($line.Trim()) { Log ("  [guard] " + $line.Trim()) } } }
     return $out
 }
-function Wait-Healthy([int]$seconds) {
+function Is-Alive([System.Diagnostics.Process]$p) {
+    if ($null -eq $p) { return $false }
+    try { $p.Refresh() } catch {}
+    return (-not $p.HasExited)
+}
+function Wait-Healthy([int]$seconds, [System.Diagnostics.Process]$proc) {
+    # Returns "ok" (healthy), "crashed" (the server process already exited, so
+    # roll back immediately instead of waiting out the timeout), or "timeout"
+    # (still running but never became healthy within $seconds).
+    # The crash branch requires BOTH an unhealthy check AND a dead process, so
+    # a server that hands off to a detached healthy child is never rolled back.
     $deadline = (Get-Date).AddSeconds($seconds)
     while ((Get-Date) -lt $deadline) {
-        if (Test-Health) { return $true }
-        Start-Sleep -Milliseconds 500
+        if (Test-Health) { return "ok" }
+        if (-not (Is-Alive $proc)) { return "crashed" }
+        Start-Sleep -Milliseconds 250
     }
-    return $false
+    return "timeout"
 }
 function Start-Server([string]$outLog, [string]$errLog) {
     $dshCmd = Join-Path $HarnessRoot "node_modules\.bin\dsh.cmd"
     if (-not (Test-Path $dshCmd)) { $dshCmd = "dsh.cmd" }
+    $cmdLine = '"' + $dshCmd + '" web'
+    if ($ServerArgs.Trim() -ne "") { $cmdLine = $cmdLine + " " + $ServerArgs.Trim() }
     $p = Start-Process -FilePath "cmd.exe" `
-        -ArgumentList '/d', '/s', '/c', ('"' + $dshCmd + '" web') `
+        -ArgumentList '/d', '/s', '/c', $cmdLine `
         -WorkingDirectory $HarnessRoot `
         -RedirectStandardOutput $outLog `
         -RedirectStandardError $errLog `
@@ -95,24 +119,26 @@ $null = Invoke-Guard @("snapshot", "--tag", "pre-boot", "--reason", "automatic s
 
 $proc = Start-Server $serverOut $serverErr
 Log "started server (pid $($proc.Id))"
-if (Wait-Healthy $FirstWaitSec) {
+$boot = Wait-Healthy $FirstWaitSec $proc
+if ($boot -eq "ok") {
     Log "boot ok on first attempt"
     Set-Status "OK" "first-attempt"
     Wait-Process -Id $proc.Id
     Log "server tree exited; boot guard done"
     exit 0
 }
-Log "server unhealthy after $FirstWaitSec s; stopping and rolling back"
+Log "server not healthy ($boot) after up to $FirstWaitSec s; stopping and rolling back"
 Stop-ServerTree $proc
 
 $null = Invoke-Guard @("rollback", "--good")
 
 $proc2 = Start-Server $serverOut $serverErr
 Log "restarted server (pid $($proc2.Id))"
-$retryOk = Wait-Healthy $RetryWaitSec
-if ($retryOk) { Set-Status "OK" "rolled-back-retry" } else { Stop-ServerTree $proc2; Set-Status "FAILED" "boot-failed" }
+$retry = Wait-Healthy $RetryWaitSec $proc2
+if ($retry -eq "ok") { Set-Status "OK" "rolled-back-retry" }
+else { Stop-ServerTree $proc2; Set-Status "FAILED" ("boot-failed (" + $retry + ")") }
 
 $null = Invoke-Guard @("incident", "--kind", "boot-failure")
 
-if ($retryOk) { Wait-Process -Id $proc2.Id; Log "server tree exited; boot guard done"; exit 0 }
+if ($retry -eq "ok") { Wait-Process -Id $proc2.Id; Log "server tree exited; boot guard done"; exit 0 }
 exit 1

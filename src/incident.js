@@ -4,11 +4,56 @@ import {
   existsSync, readFileSync, writeFileSync, renameSync, readdirSync, mkdirSync,
 } from 'node:fs'
 import http from 'node:http'
+import { TextDecoder } from 'node:util'
 import { join } from 'node:path'
 import { guardDir, guardLogsDir, pendingMarkerPath, profileDir, SNAPSHOT_FILES } from './layout.js'
 import {
-  listProfiles, listSnapshots, resolveSnapshotDir, sha256File, resolveGuardPort,
+  listProfiles, listSnapshots, resolveSnapshotDir, sha256File, resolveGuardPort, pruneGuardArtifacts,
 } from './engine.js'
+
+const _decUtf8 = new TextDecoder('utf-8', { fatal: true })
+const _decGbk = new TextDecoder('gbk')
+
+/** Decode log/text bytes robustly: strip UTF-8/UTF-16 BOMs, prefer strict
+ * UTF-8, then fall back to the system ANSI code page (GBK/CP936) for legacy
+ * logs written by PowerShell 5.1's default ANSI encoding. Returns '' only on
+ * a read failure. */
+function decodeTextRobust(buf) {
+  if (buf.length >= 3 && buf[0] === 0xef && buf[1] === 0xbb && buf[2] === 0xbf) {
+    return buf.subarray(3).toString('utf8')
+  }
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    return buf.subarray(2).toString('utf16le')
+  }
+  if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
+    const be = Buffer.from(buf.subarray(2))
+    for (let i = 0; i + 1 < be.length; i += 2) {
+      const t = be[i]
+      be[i] = be[i + 1]
+      be[i + 1] = t
+    }
+    return be.toString('utf16le')
+  }
+  try {
+    return _decUtf8.decode(buf)
+  } catch {
+    /* not strict UTF-8 — try the ANSI fallback below */
+  }
+  try {
+    return _decGbk.decode(buf)
+  } catch {
+    /* give up on a clean decode; raw utf8 replacement is the last resort */
+  }
+  return buf.toString('utf8')
+}
+
+function readTextRobust(path) {
+  try {
+    return decodeTextRobust(readFileSync(path))
+  } catch {
+    return ''
+  }
+}
 
 /** Read the pending marker, tolerating a UTF-8 BOM (PowerShell 5.1 writes one). */
 export function readPending() {
@@ -59,7 +104,7 @@ function latestLogTail(dir, pattern, tail) {
   try {
     const files = readdirSync(dir).filter((f) => f.includes(pattern)).sort()
     if (files.length === 0) return ''
-    const lines = readFileSync(join(dir, files.at(-1)), 'utf8').split(/\r?\n/)
+    const lines = readTextRobust(join(dir, files.at(-1))).split(/\r?\n/)
     return lines.slice(-tail).join('\n')
   } catch {
     return ''
@@ -68,7 +113,7 @@ function latestLogTail(dir, pattern, tail) {
 
 function readLastBoot() {
   try {
-    return readFileSync(join(guardLogsDir(), 'last-boot.txt'), 'utf8').trim()
+    return readTextRobust(join(guardLogsDir(), 'last-boot.txt')).trim() || '(unknown)'
   } catch {
     return '(unknown)'
   }
@@ -147,5 +192,6 @@ export async function buildIncidentReport(kind, { port = resolveGuardPort(), noM
 
   writeFileSync(reportPath, lines.join('\n'), 'utf8')
   if (!noMarker) writePending(kind, reportPath)
+  pruneGuardArtifacts() // the just-written report is the newest, so it survives
   return reportPath
 }
