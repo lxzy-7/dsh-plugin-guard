@@ -40,10 +40,14 @@ In short: the guard never *judges* whether a plugin is "good". It guarantees tha
 ### Install
 
 ```sh
-dsh plugin --profile web add dsh-plugin-guard
+# From GitHub source (current):
+dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
+
+# From the tarball stored in the repo:
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.1.0.tgz
 ```
 
-Restart `dsh web`. This is a standard **bundle plugin**: it joins the profile layer stack and takes effect automatically.
+Restart `dsh web`. This is a standard **bundle plugin**: it joins the profile layer stack and takes effect automatically. (Once published to npm, `dsh plugin --profile web add dsh-plugin-guard` also works.)
 
 **Enable guarded boot (strongly recommended):** launch through `scripts/boot-guard.ps1` (Windows) or `scripts/boot-guard.sh` (macOS/Linux) instead of running `dsh web` directly. Example on Windows, inside your launcher:
 
@@ -151,7 +155,7 @@ npm publish   # runs npm test first, then publishes with public access
 
 `repository` / `homepage` are optional — add them once you have a GitHub repo (the fields only improve the npm listing).
 
-Users can then install it with `dsh plugin --profile web add dsh-plugin-guard` (before it is published: `github:user/repo` or a tarball URL).
+Users can install it from the live repo with `dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard` (or the tarball in `dist/`); once it reaches npm, `dsh plugin --profile web add dsh-plugin-guard` also works.
 
 ### License
 
@@ -193,10 +197,14 @@ Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插�
 ### 安装
 
 ```sh
-dsh plugin --profile web add dsh-plugin-guard
+# 从 GitHub 源码安装(当前方式)：
+dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
+
+# 或从仓库里的安装包：
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.1.0.tgz
 ```
 
-重启 `dsh web`。这是标准 **bundle 插件**：加入 profile 层栈自动生效。
+重启 `dsh web`。这是标准 **bundle 插件**：加入 profile 层栈自动生效。(发布到 npm 后 `dsh plugin --profile web add dsh-plugin-guard` 也可用。)
 
 **启用守护启动(强烈推荐)：** 把启动命令改为经过 `scripts/boot-guard.ps1`(Windows) 或 `scripts/boot-guard.sh`(macOS/Linux)，而不是直接跑 `dsh web`。Windows 启动器示例：
 
@@ -302,11 +310,9 @@ npm login     # 在本机登录一次
 npm publish   # 先跑 npm test，再以 public 权限发布
 ```
 
-`repository` / `homepage` 为可选字段——以后建了 GitHub 仓库再补上即可(只影响 npm 页面的展示)。
+`repository` / `homepage` 已指向 GitHub 仓库(仅影响 npm 页面的展示)。
 
-用户之后可用 `dsh plugin --profile web add dsh-plugin-guard` 一键安装(未发布前：`github:user/repo` 或 tgz 链接)。
-
-用户之后可用 `dsh plugin --profile web add dsh-plugin-guard` 安装(未发布前可用 `github:user/repo` 或 tarball URL)。
+用户可从在线仓库安装：`dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard`(或下载 `dist/` 里的 tgz 按路径安装)；发布到 npm 后 `dsh plugin --profile web add dsh-plugin-guard` 也可用。
 
 ### License
 
