@@ -102,14 +102,16 @@ async function main() {
         }
         console.log(`回滚 ${p} -> 快照 ${dir.split(/[\\/]/).at(-1)}`)
         try {
-          const { pnpm, prune } = restoreSnapshot(p, dir, { skipInstall: opts.skipInstall === true })
+          const { pnpm, removedLinks } = restoreSnapshot(p, dir, { skipInstall: opts.skipInstall === true })
           if (pnpm !== null && !pnpm.ok) {
             console.error(`pnpm 失败(退出码 ${pnpm.status}): ${pnpm.output}`)
             console.error('配置文件已还原; 待 pnpm/网络可用后请手动运行 pnpm install --frozen-lockfile。')
             failed = true
           } else {
             console.log('回滚完成。重启 dsh web 使 bundle 插件的改动生效。')
-            if (prune !== null && !prune.ok) console.error(`pnpm prune 失败(退出码 ${prune.status}): ${prune.output}`)
+            if (removedLinks && removedLinks.length > 0) {
+              console.log(`已清理残留的 bundle 链接: ${removedLinks.join(', ')}`)
+            }
           }
         } catch (error) {
           console.error(`回滚 ${p} 失败: ${error.message}`)

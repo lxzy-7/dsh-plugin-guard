@@ -3,11 +3,11 @@
 // from the standalone CLI.
 import {
   existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync,
-  copyFileSync, rmSync, statSync, renameSync,
+  copyFileSync, rmSync, statSync, renameSync, lstatSync, readlinkSync,
 } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { join, dirname } from 'node:path'
+import { join, dirname, resolve, sep } from 'node:path'
 import {
   dshHome, profilesDir, profileDir, rollbacksRoot, guardDir, guardLogsDir, guardConfigPath, SNAPSHOT_FILES,
 } from './layout.js'
@@ -322,17 +322,76 @@ export function restoreSnapshot(profile, snapshotDir, { skipInstall = false } = 
     else if (existsSync(dst)) rmSync(dst, { force: true })
   }
   let pnpm = null
-  let prune = null
   if (!skipInstall) {
     const manifest = readManifest(snapshotDir)
     const command = manifest?.pnpm && existsSync(manifest.pnpm) ? manifest.pnpm : null
     pnpm = runPnpm(['install', '--frozen-lockfile'], dir, command)
-    // pnpm install --frozen-lockfile leaves orphaned .bin links for packages
-    // removed from the bundle stack ("Already up to date" does not prune), so
-    // run pnpm prune after a successful install to reconcile node_modules.
-    if (pnpm.ok) prune = runPnpm(['prune'], dir, command)
   }
-  return { restored: SNAPSHOT_FILES, pnpm, prune }
+  // pnpm install --frozen-lockfile / pnpm prune both report "Already up to
+  // date" and never remove a stale link: bundle entry whose target lives
+  // outside node_modules, so clean those symlinks directly.
+  const removedLinks = cleanupStaleBundleLinks(profile)
+  return { restored: SNAPSHOT_FILES, pnpm, removedLinks }
+}
+
+/** Names that must keep a node_modules link for this profile: every `link:`
+ * dependency in package.json (bundle plugins are installed this way) plus the
+ * dsh.profile.bundles list (harmless extra safety). */
+function validLinkNames(pkg) {
+  const names = new Set()
+  const deps = pkg?.dependencies ?? {}
+  for (const [name, spec] of Object.entries(deps)) {
+    if (typeof spec === 'string' && spec.trim().toLowerCase().startsWith('link:')) names.add(name)
+  }
+  const bundles = pkg?.dsh?.profile?.bundles
+  if (Array.isArray(bundles)) for (const b of bundles) names.add(b)
+  return names
+}
+
+/**
+ * Remove orphaned bundle-plugin symlinks left in node_modules after a rollback
+ * (or any bundle-stack change). Scans node_modules for symlinks/junctions whose
+ * resolved target is OUTSIDE node_modules (bundle `link:` deps point at the
+ * plugins dir) and whose name is no longer a `link:` dependency / bundle in the
+ * restored package.json, and deletes exactly those links — never their targets
+ * and never normal pnpm deps (which link inside node_modules/.pnpm). Returns
+ * the removed names.
+ */
+export function cleanupStaleBundleLinks(profile) {
+  const dir = profileDir(profile)
+  const nm = join(dir, 'node_modules')
+  if (!existsSync(nm)) return []
+  let pkg = null
+  try {
+    pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+  } catch { /* broken package.json -> no valid set -> treat stale links as stale */ }
+  const valid = validLinkNames(pkg)
+  const removed = []
+  const scan = (base, prefix) => {
+    let entries = []
+    try { entries = readdirSync(base, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = join(base, e.name)
+      let st
+      try { st = lstatSync(p) } catch { continue }
+      // real directory that is a scoped namespace -> descend into it
+      if (st.isDirectory() && !st.isSymbolicLink() && e.name.startsWith('@')) {
+        scan(p, e.name)
+        continue
+      }
+      if (!st.isSymbolicLink()) continue
+      let target = ''
+      try { target = readlinkSync(p) } catch { continue }
+      const abs = resolve(dirname(p), target)
+      // normal pnpm deps link inside node_modules (.pnpm/...) -> keep
+      if (abs === nm || abs.startsWith(nm + sep)) continue
+      const name = prefix ? `${prefix}/${e.name}` : e.name
+      if (valid.has(name)) continue
+      try { rmSync(p, { recursive: true, force: true }); removed.push(name) } catch { /* best effort */ }
+    }
+  }
+  scan(nm, '')
+  return removed
 }
 
 export { stamp, sha256File }

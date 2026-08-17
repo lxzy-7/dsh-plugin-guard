@@ -193,13 +193,13 @@ export function createGuardTools() {
             const good = args.snapshotId === undefined && args.good !== false
             const dir = resolveSnapshotDir(profile, { id: args.snapshotId ?? '', good })
             if (!dir) return { result: `profile ${profile} 没有可用快照 / no snapshot available`, detail: '请先运行 dsh_snapshot 备份 / run dsh_snapshot first' }
-            const { pnpm, prune } = restoreSnapshot(profile, dir, { skipInstall: args.skipInstall === true })
+            const { pnpm, removedLinks } = restoreSnapshot(profile, dir, { skipInstall: args.skipInstall === true })
             let detail = pnpm === null
               ? '文件已还原(pnpm install 已跳过) / files restored (pnpm skipped)'
               : pnpm.ok ? `文件已还原; pnpm: ${pnpm.output} / files restored; pnpm: ${pnpm.output}` : `文件已还原; pnpm 失败(${pnpm.status}): ${pnpm.output} / files restored; PNPM FAILED (${pnpm.status}): ${pnpm.output}`
-            if (prune !== null) detail += prune.ok
-              ? `; pnpm prune: ${prune.output} / prune: ${prune.output}`
-              : `; pnpm prune 失败(${prune.status}): ${prune.output} / prune FAILED (${prune.status}): ${prune.output}`
+            if (removedLinks && removedLinks.length > 0) {
+              detail += `; 已清理残留 bundle 链接: ${removedLinks.join(', ')} / removed stale links: ${removedLinks.join(', ')}`
+            }
             return {
               result: `profile ${profile} 已回滚到 / rolled back to ${dir.split(/[\\/]/).at(-1)}`,
               detail: `${detail}\n重启 dsh web 使 bundle 插件的改动生效 / Restart dsh web for bundle changes to take effect.`,

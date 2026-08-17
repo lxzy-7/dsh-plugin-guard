@@ -44,7 +44,7 @@ In short: the guard never *judges* whether a plugin is "good". It guarantees tha
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # From the tarball stored in the repo:
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.1.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.2.tgz
 ```
 
 Restart `dsh web`. This is a standard **bundle plugin**: it joins the profile layer stack and takes effect automatically. (Once published to npm, `dsh plugin --profile web add dsh-plugin-guard` also works.)
@@ -60,7 +60,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File node_modules\dsh-plugin-guar
 
 **Optional CLI shim (covers manual terminal installs):** the package ships a `dsh-guard` bin (`scripts/guard-cli.js`). Put it on your PATH and run `dsh-guard snapshot` before `dsh plugin add <pkg>` from a terminal, or wrap your own `dsh` wrapper with it. This covers installs that do not go through the in-process `tools.guard` hook.
 
-**One-click manual rollback (Windows):** the package also ships `scripts/rollback.cmd`. After install it lives at `$DSH_HOME/profiles/<profile>/node_modules/dsh-plugin-guard/scripts/rollback.cmd` — right-click → *Create shortcut* (or copy the file anywhere) and double-click it to restore the last good snapshot of every profile and re-run `pnpm install --frozen-lockfile`. It works even when the app cannot start, and it self-derives `DSH_HOME` when the environment does not set it.
+**One-click manual rollback (Windows):** the package also ships `scripts/rollback.cmd`. After install it lives at `$DSH_HOME/profiles/<profile>/node_modules/dsh-plugin-guard/scripts/rollback.cmd` — right-click → *Create shortcut* (or copy the file anywhere) and double-click it to restore the last good snapshot of every profile and re-run `pnpm install --frozen-lockfile`. Rollback also deletes any orphaned bundle-plugin symlinks left in `node_modules` (pnpm never removes a stale `link:` entry — "Already up to date" — so the guard does it directly against the restored `package.json`). It works even when the app cannot start, and it self-derives `DSH_HOME` when the environment does not set it.
 
 ### Usage
 
@@ -201,7 +201,7 @@ Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插�
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # 或从仓库里的安装包：
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.1.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.2.tgz
 ```
 
 重启 `dsh web`。这是标准 **bundle 插件**：加入 profile 层栈自动生效。(发布到 npm 后 `dsh plugin --profile web add dsh-plugin-guard` 也可用。)
