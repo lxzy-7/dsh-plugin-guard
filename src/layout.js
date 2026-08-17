@@ -44,10 +44,14 @@ export function guardConfigPath() {
   return join(guardDir(), 'config.json')
 }
 
-/** Files captured by every snapshot (the complete install-state metadata). */
+/** Files captured by every snapshot (the complete install-state metadata).
+ * cordis.yml is the profile composition root — MCP servers are added there as
+ * dsh-mcp-client instances, so it must be snapshotted/restored too or a bad
+ * MCP config would survive rollback and keep breaking boot. */
 export const SNAPSHOT_FILES = [
   'package.json',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
+  'cordis.yml',
   'cordis.patch.yml',
 ]

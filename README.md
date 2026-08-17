@@ -29,7 +29,7 @@ Guarded boot (boot-guard script)
 
 The guard does **not** statically inspect plugin code, and it does **not** try to "test" a plugin in isolation. Detection works at three levels:
 
-1. **Snapshots are pure file copies.** Taking a snapshot just copies 4 config files (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `cordis.patch.yml`). No plugin is run, no behavior is evaluated.
+1. **Snapshots are pure file copies.** Taking a snapshot just copies 5 config files (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `cordis.yml`, `cordis.patch.yml`). No plugin is run, no behavior is evaluated.
 
 2. **Boot-level detection does run the harness — with your plugin loaded.** The `boot-guard` script starts the whole `dsh web` process (which loads every installed plugin, including the one you just added) and then health-checks HTTP `/` within a timeout. If a plugin breaks boot — load error, startup crash, unresponsive server — the check fails, and the guard automatically kills the tree, rolls back to the last good snapshot, and retries once. So **yes**: to catch a boot-breaking plugin, the harness (and therefore that plugin) has to actually start. That is the one moment where "running the plugin" is part of detection.
 
@@ -44,7 +44,7 @@ In short: the guard never *judges* whether a plugin is "good". It guarantees tha
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # From the tarball stored in the repo:
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.0.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.1.tgz
 ```
 
 Restart `dsh web`. This is a standard **bundle plugin**: it joins the profile layer stack and takes effect automatically. (Once published to npm, `dsh plugin --profile web add dsh-plugin-guard` also works.)
@@ -104,7 +104,7 @@ profiles
 Every path is anchored at `$DSH_HOME` (defaults to `~/.dsh` when the env var is unset):
 
 ```
-$DSH_HOME/rollbacks/<profile>/<stamp>/    snapshots (4 config files + manifest.json)
+$DSH_HOME/rollbacks/<profile>/<stamp>/    snapshots (5 config files + manifest.json)
 $DSH_HOME/guard/logs/                     boot/server logs, incident reports, last-boot.txt
 $DSH_HOME/guard/pending-incident.json     pending incident marker
 $DSH_HOME/guard/config.json               guard settings (keepSnapshots, port)
@@ -186,7 +186,7 @@ MIT
 
 Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插件。检测分三层：
 
-1. **快照只是纯文件复制。** 备份只是复制 4 个配置文件，不会运行任何插件，也不评估任何行为。
+1. **快照只是纯文件复制。** 备份只是复制 5 个配置文件（含 `cordis.yml`——MCP 服务器实例就配在这里，坏掉的 MCP 配置可随回滚一并撤销），不会运行任何插件，也不评估任何行为。
 
 2. **启动级检测确实会运行 harness——连同你装的插件一起。** `boot-guard` 会启动整个 `dsh web` 进程（会加载所有已装插件，包括你刚加的），然后在超时内对 HTTP `/` 做健康检查。如果插件导致启动失败（加载报错、启动崩溃、服务无响应），检查即失败，guard 会自动杀掉进程树、回退到最后良好快照并重试一次。所以**是的**：要抓住"搞坏启动"的插件，harness（连同该插件）必须真正启动一次——这是检测中唯一需要"运行插件"的时刻。
 
@@ -201,7 +201,7 @@ Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插�
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # 或从仓库里的安装包：
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.0.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.1.tgz
 ```
 
 重启 `dsh web`。这是标准 **bundle 插件**：加入 profile 层栈自动生效。(发布到 npm 后 `dsh plugin --profile web add dsh-plugin-guard` 也可用。)
@@ -261,7 +261,7 @@ profiles
 所有路径都锚定 `$DSH_HOME`(未设置时默认 `~/.dsh`)：
 
 ```
-$DSH_HOME/rollbacks/<profile>/<stamp>/   快照(4 个配置文件 + manifest.json)
+$DSH_HOME/rollbacks/<profile>/<stamp>/   快照(5 个配置文件 + manifest.json)
 $DSH_HOME/guard/logs/                    启动/服务器日志、事故报告、last-boot.txt
 $DSH_HOME/guard/pending-incident.json    待处理事故标记
 $DSH_HOME/guard/config.json              备份设置(keepSnapshots, port)
