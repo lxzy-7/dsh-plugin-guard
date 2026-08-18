@@ -13,9 +13,10 @@
 import {
   listProfiles, snapshotProfile, snapshotAll, listSnapshots,
   resolveSnapshotDir, restoreSnapshot, readGuardConfig, setKeepSnapshots, resolveGuardPort,
+  profilePluginRows, diagnoseCulprit, quarantinePlugin, unquarantinePlugin, readQuarantines,
 } from '../src/engine.js'
 import {
-  readPending, resolveIncidentMarker, buildIncidentReport, health,
+  readPending, resolveIncidentMarker, buildIncidentReport, health, writeQuarantineMarker,
 } from '../src/incident.js'
 
 function parseArgs(argv) {
@@ -32,6 +33,10 @@ function parseArgs(argv) {
     else if (a === '--good') opts.good = true
     else if (a === '--skip-install') opts.skipInstall = true
     else if (a === '--no-marker') opts.noMarker = true
+    else if (a === '--plugin') opts.plugin = argv[++i]
+    else if (a === '--undo') opts.undo = true
+    else if (a === '--diagnose') opts.diagnose = true
+    else if (a === '--list') opts.list = true
     else if (a === '-h' || a === '--help') opts.help = true
     else opts._.push(a)
   }
@@ -47,6 +52,9 @@ const USAGE = `dsh-guard: DeepSeek Harness 安装/回滚安全网
   health   [--port N]                                        检查后端健康状态
   incident [--kind K] [--no-marker]                          生成事故定位报告
   resolve                                                   标记待处理事故为已解决
+  quarantine --diagnose                                     从启动日志识别导致失败的问题插件
+  quarantine --plugin <id> [--undo]                         隔离(禁用) / 恢复一个插件
+  quarantine --list                                         列出已隔离插件
   profiles                                                  列出所有 profile`
 
 async function main() {
@@ -158,6 +166,42 @@ async function main() {
       const healthy = await health(port)
       console.log(`健康状态: ${healthy ? '正常' : '异常'}`)
       console.log(`待处理事故: ${readPending() ? '有' : '无'}`)
+      return 0
+    }
+    case 'quarantine': {
+      const profile = opts.profile ?? 'web'
+      if (opts.diagnose === true) {
+        const d = diagnoseCulprit(profile)
+        if (d === null) { console.log('CULPRIT=NONE'); console.log('NAME=NONE'); return 0 }
+        console.log(`CULPRIT=${d.id ?? 'NONE'}`)
+        console.log(`NAME=${d.name ?? 'NONE'}`)
+        console.log(`QUARANTINEABLE=${d.id !== null}`)
+        return d.id !== null ? 0 : 1
+      }
+      if (opts.list === true) {
+        const q = readQuarantines()
+        if (q.length === 0) console.log('(无已隔离插件)')
+        for (const e of q) console.log(`${e.id}  自 ${e.time}`)
+        return 0
+      }
+      const id = opts.plugin
+      if (!id) { console.error('用法: dsh-guard quarantine --plugin <id> [--undo] | --diagnose | --list'); return 2 }
+      if (opts.undo === true) {
+        unquarantinePlugin(profile, id)
+        const p = readPending()
+        if (p && p.kind === 'quarantine') resolveIncidentMarker()
+        console.log(`已恢复插件 ${id}(移除禁用标记)`)
+        return 0
+      }
+      const rows = profilePluginRows(profile)
+      const row = rows.find((r) => r.patch && r.id === id)
+      if (!row) {
+        console.error(`插件 ${id} 不是 cordis.patch.yml 管理的可隔离插件(无法通过禁用行安全处理)`)
+        return 1
+      }
+      quarantinePlugin(profile, id)
+      writeQuarantineMarker(id, row.name)
+      console.log(`已隔离插件 ${row.name} (id: ${id}): 已在 cordis.patch.yml 追加 disabled: true`)
       return 0
     }
     default: {

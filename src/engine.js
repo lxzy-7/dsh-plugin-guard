@@ -8,6 +8,7 @@ import {
 import { createHash } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
 import { join, dirname, resolve, sep } from 'node:path'
+import yaml from 'js-yaml'
 import {
   dshHome, profilesDir, profileDir, rollbacksRoot, guardDir, guardLogsDir, guardConfigPath, SNAPSHOT_FILES,
 } from './layout.js'
@@ -53,6 +54,145 @@ export function readGuardConfig() {
     if (Number.isFinite(p) && p >= 1 && p <= 65535) out.port = p
   }
   return out
+}
+
+const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** The profile's known plugin rows: patch insert rows (quarantineable via a
+ * `disabled` override) plus bundle/link-dep package names (informational only).
+ * Returns [{ id, name, patch }]. */
+export function profilePluginRows(profile) {
+  const dir = profileDir(profile)
+  const rows = []
+  const seen = new Set()
+  const add = (id, name, patch) => {
+    if (!id || seen.has(id)) return
+    seen.add(id)
+    rows.push({ id, name: name || id, patch: patch === true })
+  }
+  try {
+    const y = yaml.load(readFileSync(join(dir, 'cordis.patch.yml'), 'utf8'))
+    if (Array.isArray(y)) {
+      for (const e of y) {
+        if (e && Array.isArray(e.insert)) {
+          for (const r of e.insert) {
+            if (r && typeof r.id === 'string') add(r.id, typeof r.name === 'string' ? r.name : r.id, true)
+          }
+        }
+      }
+    }
+  } catch { /* unparseable patch -> no patch rows */ }
+  try {
+    const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    const bundles = pkg?.dsh?.profile?.bundles
+    if (Array.isArray(bundles)) for (const b of bundles) add(b, b, false)
+    const deps = pkg?.dependencies ?? {}
+    for (const [name, spec] of Object.entries(deps)) {
+      if (typeof spec === 'string' && spec.trim().toLowerCase().startsWith('link:')) add(name, name, false)
+    }
+  } catch { /* ignore */ }
+  return rows
+}
+
+/** Extract the package names implicated by a boot failure. Handles both the
+ * mount-phase abort format — `failed to <stage> loader entry <id> (<name>):`
+ * (this harness's main boot-period plugin failure) — and the tree-settle
+ * summary — `plugin(s) failed to load: A, B`. Each token is matched exactly
+ * against the profile's patch rows later, so over-capture here is avoided by
+ * taking only clean package-name tokens. */
+export function extractFailedPluginNames(logText) {
+  const names = []
+  if (!logText) return names
+  const push = (n) => { const t = String(n || '').trim(); if (t && !names.includes(t)) names.push(t) }
+  // loader-entry mount failure: "failed to apply loader entry <id> (<name>): ..."
+  const entryRe = /failed to \S+ loader entry \S+ \(([^)]+)\):/gi
+  let m
+  while ((m = entryRe.exec(logText))) push(m[1])
+  // tree-settle summary: "plugin(s) failed to load: A, B"
+  const settle = logText.match(/plugin\(s\) failed to load:\s*([^;\n]+)/i)
+  if (settle) {
+    for (const raw of settle[1].split(',')) push(raw.replace(/[()]/g, ''))
+  }
+  return names
+}
+
+function latestLogText(dir, re) {
+  try {
+    const files = readdirSync(dir).filter((f) => re.test(f)).sort()
+    if (files.length === 0) return ''
+    return readFileSync(join(dir, files.at(-1)), 'utf8')
+  } catch { return '' }
+}
+
+/** Diagnose which plugin broke this boot: parse the latest server (err + out)
+ * and boot logs for either the loader-entry mount failure or the tree-settle
+ * summary, and map the first implicated name to a quarantineable patch row id
+ * (matching by package name OR row id). Returns { id, name } (id null when the
+ * culprit is a bundle/dep that cannot be disabled by a patch override), or
+ * null when no plugin is implicated. */
+export function diagnoseCulprit(profile) {
+  const logs = guardLogsDir()
+  const errText = latestLogText(logs, /^server-.*\.err\.log$/)
+  const outText = latestLogText(logs, /^server-.*\.out\.log$/)
+  const bootText = latestLogText(logs, /^boot-.*\.log$/)
+  const text = `${errText}\n${outText}\n${bootText}`
+  const names = extractFailedPluginNames(text)
+  if (names.length === 0) return null
+  const rows = profilePluginRows(profile)
+  for (const name of names) {
+    const row = rows.find((r) => r.patch && (r.name === name || r.id === name))
+    if (row) return { id: row.id, name }
+  }
+  return { id: null, name: names[0] }
+}
+
+/** Disable a patch-row plugin by appending a `disabled: true` override to the
+ * profile's cordis.patch.yml, and record it in guard/quarantine.json. */
+export function quarantinePlugin(profile, id) {
+  const dir = profileDir(profile)
+  const patchPath = join(dir, 'cordis.patch.yml')
+  const block = `- id: ${id}\n  disabled: true\n`
+  let text = ''
+  try { text = readFileSync(patchPath, 'utf8') } catch { text = '' }
+  if (!new RegExp(`- id: ${escapeRegex(id)}\\s*\\n\\s*disabled:\\s*true`).test(text)) {
+    const sep = text.endsWith('\n') ? '' : '\n'
+    writeFileSync(patchPath, text + sep + block, 'utf8')
+  }
+  mkdirSync(guardDir(), { recursive: true })
+  const qPath = join(guardDir(), 'quarantine.json')
+  let list = []
+  try { list = JSON.parse(readFileSync(qPath, 'utf8')) } catch { list = [] }
+  if (!Array.isArray(list)) list = []
+  list.push({ id, time: new Date().toISOString() })
+  writeFileSync(qPath, `${JSON.stringify(list, null, 2)}\n`, 'utf8')
+  return { ok: true, id }
+}
+
+/** Remove the `disabled: true` override for a plugin and drop it from
+ * guard/quarantine.json. */
+export function unquarantinePlugin(profile, id) {
+  const dir = profileDir(profile)
+  const patchPath = join(dir, 'cordis.patch.yml')
+  let text = ''
+  try { text = readFileSync(patchPath, 'utf8') } catch { text = '' }
+  const re = new RegExp(`- id: ${escapeRegex(id)}\\s*\\n\\s*disabled:\\s*true\\s*\\n?`)
+  const next = text.replace(re, '')
+  if (next !== text) writeFileSync(patchPath, next, 'utf8')
+  const qPath = join(guardDir(), 'quarantine.json')
+  try {
+    const list = JSON.parse(readFileSync(qPath, 'utf8'))
+    const kept = Array.isArray(list) ? list.filter((e) => e && e.id !== id) : []
+    writeFileSync(qPath, `${JSON.stringify(kept, null, 2)}\n`, 'utf8')
+  } catch { /* ignore */ }
+  return { ok: true, id }
+}
+
+/** Every recorded quarantine [{ id, time }]. */
+export function readQuarantines() {
+  try {
+    const list = JSON.parse(readFileSync(join(guardDir(), 'quarantine.json'), 'utf8'))
+    return Array.isArray(list) ? list : []
+  } catch { return [] }
 }
 
 /** Effective per-profile snapshot retention cap. */

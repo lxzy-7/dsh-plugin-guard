@@ -208,8 +208,41 @@ if ($retry -eq "ok") {
     $retryRender = Confirm-RenderReady
     if ($retryRender -ne "ok") { $retry = "rendercrash" }
 }
-if ($retry -eq "ok") { Set-Status "OK" "rolled-back-retry" }
-else { Stop-ServerTree $proc2; Set-Status "FAILED" ("boot-failed (" + $retry + ")") }
+if ($retry -eq "ok") {
+    Set-Status "OK" "rolled-back-retry"
+} else {
+    Stop-ServerTree $proc2
+    Set-Status "FAILED" ("boot-failed (" + $retry + ")")
+    Log "rollback did not fix the boot; diagnosing the offending plugin for quarantine"
+    $diag = Invoke-Guard @("quarantine", "--diagnose")
+    $culprit = ""
+    foreach ($line in ($diag -split "`r?`n")) {
+        if ($line -match '^CULPRIT=(\S+)$') { $culprit = $Matches[1] }
+    }
+    if ($culprit -ne "" -and $culprit -ne "NONE") {
+        Log "culprit plugin identified: $culprit - disabling it and booting without it"
+        $null = Invoke-Guard @("quarantine", "--plugin", $culprit)
+        $proc3 = Start-Server $serverOut $serverErr
+        Log "restarted server without $culprit (pid $($proc3.Id))"
+        $qBoot = Wait-Healthy $RetryWaitSec $proc3
+        if ($qBoot -eq "ok") {
+            $qRender = Confirm-RenderReady
+            if ($qRender -ne "ok") { $qBoot = "rendercrash" }
+        }
+        if ($qBoot -eq "ok") {
+            Log "boot ok after quarantining $culprit"
+            Set-Status "QUARANTINED" ("$culprit 与当前 DSH 不兼容: 回滚无法解决, 已禁用并正常启动")
+            Wait-Process -Id $proc3.Id
+            Log "server tree exited; boot guard done (plugin quarantined)"
+            exit 0
+        }
+        Stop-ServerTree $proc3
+        Set-Status "FAILED" ("boot-failed-after-quarantine (" + $qBoot + ")")
+        Log "still not healthy after quarantining $culprit"
+    } else {
+        Log "no quarantineable plugin identified from the boot logs; keeping the failure report"
+    }
+}
 
 $null = Invoke-Guard @("incident", "--kind", "boot-failure")
 

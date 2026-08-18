@@ -31,7 +31,7 @@ The guard does **not** statically inspect plugin code, and it does **not** try t
 
 1. **Snapshots are pure file copies.** Taking a snapshot just copies 5 config files (`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `cordis.yml`, `cordis.patch.yml`). No plugin is run, no behavior is evaluated.
 
-2. **Boot-level detection does run the harness — with your plugin loaded.** The `boot-guard` script starts the whole `dsh web` process (which loads every installed plugin, including the one you just added) and then health-checks HTTP `/` within a timeout. If a plugin breaks boot — load error, startup crash, unresponsive server — the check fails, and the guard automatically kills the tree, rolls back to the last good snapshot, and retries once. So **yes**: to catch a boot-breaking plugin, the harness (and therefore that plugin) has to actually start. That is the one moment where "running the plugin" is part of detection. Since v0.3.1 the check also confirms the **web client actually rendered** (a plugin crash that black-screens the page with an error leaves HTTP 200 up — the guard's client reports render crashes, and the boot-guard rolls back instead of calling a black screen "healthy"); incident reports additionally record the **dsh version per snapshot** and flag when a boot failure follows a harness update that a profile rollback cannot undo.
+2. **Boot-level detection does run the harness — with your plugin loaded.** The `boot-guard` script starts the whole `dsh web` process (which loads every installed plugin, including the one you just added) and then health-checks HTTP `/` within a timeout. If a plugin breaks boot — load error, startup crash, unresponsive server — the check fails, and the guard automatically kills the tree, rolls back to the last good snapshot, and retries once. So **yes**: to catch a boot-breaking plugin, the harness (and therefore that plugin) has to actually start. That is the one moment where "running the plugin" is part of detection. Since v0.3.1 the check also confirms the **web client actually rendered** (a plugin crash that black-screens the page with an error leaves HTTP 200 up — the guard's client reports render crashes, and the boot-guard rolls back instead of calling a black screen "healthy"); incident reports additionally record the **dsh version per snapshot** and flag when a boot failure follows a harness update that a profile rollback cannot undo. **Since v0.3.2, when rollback and the retry both fail** (a DSH update made a plugin incompatible), the boot-guard diagnoses the offending plugin from the boot logs, **quarantines it** (appends `disabled: true` to `cordis.patch.yml`), boots without it, and clearly reports which plugin was pulled out and how to restore it (`dsh-guard quarantine --undo <id>`).
 
 3. **Runtime-only problems are not detected at install time.** If a plugin installs and boots fine but only misbehaves later (crashes under a specific operation, corrupts state, etc.), no generic guard can predict that without running your real workload. When such an incident happens, `dsh_rollback action=incident` builds a problem-localization report (last boot logs, server stderr, and a diff of the profile config against the last good snapshot) and sets a pending marker so the next session automatically focuses on diagnosing it. And because a snapshot is always taken before any mutation, you can always roll back manually afterwards.
 
@@ -44,7 +44,7 @@ In short: the guard never *judges* whether a plugin is "good". It guarantees tha
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # From the tarball stored in the repo:
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.3.1.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.3.2.tgz
 ```
 
 Restart `dsh web`. This is a standard **bundle plugin**: it joins the profile layer stack and takes effect automatically. (Once published to npm, `dsh plugin --profile web add dsh-plugin-guard` also works.)
@@ -188,7 +188,7 @@ Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插�
 
 1. **快照只是纯文件复制。** 备份只是复制 5 个配置文件（含 `cordis.yml`——MCP 服务器实例就配在这里，坏掉的 MCP 配置可随回滚一并撤销），不会运行任何插件，也不评估任何行为。
 
-2. **启动级检测确实会运行 harness——连同你装的插件一起。** `boot-guard` 会启动整个 `dsh web` 进程（会加载所有已装插件，包括你刚加的），然后在超时内对 HTTP `/` 做健康检查。如果插件导致启动失败（加载报错、启动崩溃、服务无响应），检查即失败，guard 会自动杀掉进程树、回退到最后良好快照并重试一次。所以**是的**：要抓住"搞坏启动"的插件，harness（连同该插件）必须真正启动一次——这是检测中唯一需要"运行插件"的时刻。v0.3.1 起还会确认 **web 客户端真正渲染成功**（插件崩溃导致页面黑屏报错时 HTTP 仍是 200——guard 客户端会上报渲染崩溃，守护脚本会回滚而不是把黑屏当成"健康"）；事故报告会记录每个快照对应的 **dsh 版本**，并在启动失败紧跟 harness 更新时明确标注（profile 回滚无法撤销 DSH 根目录更新）。
+2. **启动级检测确实会运行 harness——连同你装的插件一起。** `boot-guard` 会启动整个 `dsh web` 进程（会加载所有已装插件，包括你刚加的），然后在超时内对 HTTP `/` 做健康检查。如果插件导致启动失败（加载报错、启动崩溃、服务无响应），检查即失败，guard 会自动杀掉进程树、回退到最后良好快照并重试一次。所以**是的**：要抓住"搞坏启动"的插件，harness（连同该插件）必须真正启动一次——这是检测中唯一需要"运行插件"的时刻。v0.3.1 起还会确认 **web 客户端真正渲染成功**（插件崩溃导致页面黑屏报错时 HTTP 仍是 200——guard 客户端会上报渲染崩溃，守护脚本会回滚而不是把黑屏当成"健康"）；事故报告会记录每个快照对应的 **dsh 版本**，并在启动失败紧跟 harness 更新时明确标注（profile 回滚无法撤销 DSH 根目录更新）。**v0.3.2 起，当回滚与重试都失败**（DSH 更新导致插件不适配）时，boot-guard 会从启动日志**诊断出问题插件并隔离**（在 `cordis.patch.yml` 追加 `disabled: true`），不带它启动，并明确显示被拔出的插件及恢复方法（`dsh-guard quarantine --undo <id>`）。
 
 3. **只在运行期才出问题的插件，安装时检测不到。** 如果一个插件装得上、启动也正常，只是后来才出错（在某个操作下崩溃、弄坏状态等），任何通用 guard 都无法在不运行你的真实工作负载的情况下预判。这类事故发生后，`dsh_rollback action=incident` 会生成事故定位报告（最近启动日志、服务端 stderr、profile 配置与最近良好快照的差异），并设置待处理标记，让下一次会话自动聚焦于诊断它。而且任何变更前都会先快照，所以你事后也随时能手动回退。
 
@@ -201,7 +201,7 @@ Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插�
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # 或从仓库里的安装包：
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.3.1.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.3.2.tgz
 ```
 
 重启 `dsh web`。这是标准 **bundle 插件**：加入 profile 层栈自动生效。(发布到 npm 后 `dsh plugin --profile web add dsh-plugin-guard` 也可用。)

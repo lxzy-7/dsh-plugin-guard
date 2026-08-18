@@ -75,6 +75,16 @@ export function writePending(kind, report) {
   return marker
 }
 
+/** Write a pending "plugin quarantined" notice so the next session clearly
+ * shows which plugin was pulled out, that rollback could not fix it, and how to
+ * restore it. */
+export function writeQuarantineMarker(pluginId, pluginName) {
+  mkdirSync(guardDir(), { recursive: true })
+  const marker = { kind: 'quarantine', time: new Date().toISOString(), pluginId, pluginName }
+  writeFileSync(pendingMarkerPath(), `${JSON.stringify(marker, null, 2)}\n`, 'utf8')
+  return marker
+}
+
 export function resolveIncidentMarker() {
   if (!existsSync(pendingMarkerPath())) return { result: '没有待处理的事故' }
   const inc = readPending()
@@ -89,6 +99,17 @@ export function incidentSectionText() {
   if (inc === null) return ''
   const kind = typeof inc.kind === 'string' ? inc.kind : 'unknown'
   const time = typeof inc.time === 'string' ? inc.time : 'unknown'
+  if (kind === 'quarantine') {
+    const id = typeof inc.pluginId === 'string' ? inc.pluginId : '(未知)'
+    const name = typeof inc.pluginName === 'string' ? inc.pluginName : id
+    return [
+      '【需要留意 · 插件已被隔离(disabled)】',
+      `插件 ${name} (id: ${id}) 与当前 DSH 不兼容：回滚无法解决，guard 已自动禁用它并正常启动。`,
+      `处理方式: ①升级该插件到与当前 DSH 兼容的版本后再恢复; ②或确认不需要它(保持禁用)。`,
+      `恢复命令: dsh-guard quarantine --undo ${id}`,
+      '若已处理完毕，调用 incident_resolved 工具清除本提示。',
+    ].join('\n')
+  }
   const report = typeof inc.report === 'string' ? inc.report : '(path missing)'
   return [
     '【高优先级 · 待处理的 DSH 事故】',
