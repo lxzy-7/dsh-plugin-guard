@@ -12,13 +12,20 @@
 //
 // Out-of-process halves (scripts/): standalone CLI (`dsh-guard`), boot guard
 // scripts for Windows and POSIX, and PATH shims — see README.
-import { snapshotAll, snapshotProfile, listProfiles, listSnapshots, resolveSnapshotDir, restoreSnapshot, readGuardConfig, setKeepSnapshots } from './engine.js'
+import { snapshotAll, snapshotProfile, listProfiles, listSnapshots, resolveSnapshotDir, restoreSnapshot, readGuardConfig, setKeepSnapshots, DEFAULT_KEEP_SNAPSHOTS, MIN_KEEP_SNAPSHOTS, MAX_KEEP_SNAPSHOTS } from './engine.js'
 import { incidentSectionText, readPending, resolveIncidentMarker } from './incident.js'
 import { createGuardTools } from './tools.js'
+import z from '@deepseek-ai/schemastery'
 
 export const name = 'guard'
 
 const GUARDED_TOOLS = new Set(['plugin_install', 'plugin_uninstall', 'plugin_toggle'])
+
+// Host-side settings scope for this plugin's own namespace (`guard`), set when
+// the settings service is available. keepSnapshots stays authoritative in
+// guard/config.json (CLI/boot-guard mirror); the scope is the validated write
+// path used by the web 设置 surface and the Plugins-tab settings card.
+let guardSettingsScope = null
 
 // ── tiny HTTP helpers (plain node:http) ──
 const errMsg = (e) => (e && e.message) ? e.message : String(e)
@@ -92,52 +99,55 @@ async function handleRollback(req, res) {
 async function handleKeep(req, res) {
   try {
     const body = await readBody(req)
-    const n = setKeepSnapshots(Number(body.keep))
-    send(res, { ok: true, keepSnapshots: n })
+    const num = setKeepSnapshots(Number(body.keep))
+    // Keep the settings namespace in sync so the 设置 > 插件 card reflects the
+    // same value (the namespace schema validates 2-100; config.json is already
+    // authoritative and written above).
+    if (guardSettingsScope !== null) {
+      try { await guardSettingsScope.update({ keepSnapshots: num }) } catch { /* config.json wins; ignore */ }
+    }
+    send(res, { ok: true, keepSnapshots: num })
   } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
 }
 
-export function apply(ctx, config) {
-  const apiOnly = !!(config && config.apiOnly)
+export function apply(ctx) {
+  // 1. Incident-alert prompt section.
+  const sp = ctx.get('systemPrompt')
+  if (sp !== undefined) {
+    sp.section({
+      name: 'guard:incident-alert',
+      order: -50,
+      text: () => incidentSectionText(),
+    })
+  }
 
-  if (!apiOnly) {
-    const sp = ctx.get('systemPrompt')
-    if (sp !== undefined) {
-      sp.section({
-        name: 'guard:incident-alert',
-        order: -50,
-        text: () => incidentSectionText(),
-      })
-    }
-
-    const tools = ctx.get('tools')
-    if (tools !== undefined) {
-      // Auto-snapshot before mutating install tools. Side-effect only: a guard
-      // never denies; snapshot errors are swallowed so the install itself is
-      // never blocked by the safety net.
-      tools.guard((execution) => {
-        if (GUARDED_TOOLS.has(execution.name)) {
-          try {
-            snapshotAll('auto-before-install', `pre-tool guard for ${execution.name}`)
-          } catch {
-            // never block the install because the guard failed
-          }
+  // 2. Pre-tool guard + guard tools. Auto-snapshot before mutating install
+  // tools. Side-effect only: a guard never denies; snapshot errors are
+  // swallowed so the install itself is never blocked by the safety net.
+  const tools = ctx.get('tools')
+  if (tools !== undefined) {
+    tools.guard((execution) => {
+      if (GUARDED_TOOLS.has(execution.name)) {
+        try {
+          snapshotAll('auto-before-install', `pre-tool guard for ${execution.name}`)
+        } catch {
+          // never block the install because the guard failed
         }
-        return undefined
-      })
-
-      for (const tool of createGuardTools()) {
-        tools.register(tool)
       }
+      return undefined
+    })
+
+    for (const tool of createGuardTools()) {
+      tools.register(tool)
     }
   }
 
-  // 设置 > 备份管理 API. Registered only by the apiOnly row; that row declares
-  // inject:['webServer'] (per-row, in the bundle patch), so webServer is
-  // guaranteed present here. The main guard row never touches routes (no
-  // duplicate registration) and stays webServer-free for non-web profiles.
-  if (apiOnly) {
-    const webServer = ctx.get('webServer')
+  // 3. 设置 > 备份管理 HTTP API. Registered from the single guard row when a
+  // webServer exists; absent for non-web profiles (no separate apiOnly row).
+  // ctx.inject waits for webServer instead of a point-in-time ctx.get so the
+  // routes are registered even if webServer mounts after this row; it is
+  // non-blocking — a profile without webServer simply never gets the routes.
+  ctx.inject(['webServer'], (wctx) => {
     const routes = [
       { kind: 'exact', path: '/guard/api/state', handler: handleState },
       { kind: 'exact', path: '/guard/api/snapshot', handler: handleSnapshot },
@@ -145,9 +155,46 @@ export function apply(ctx, config) {
       { kind: 'exact', path: '/guard/api/keep', handler: handleKeep },
     ]
     for (const route of routes) {
-      ctx.effect(() => webServer.register(route), `guard: ${route.path} route`)
+      wctx.effect(() => wctx.webServer.register(route), `guard: ${route.path} route`)
     }
-  }
+  })
+
+  // 4. rc.7 plugin-owned settings surface: register a `guard` namespace so the
+  // plugin appears in 设置 > 插件 > 插件配置 as a configurable card (schema
+  // validated + revision fenced via ctx.settings). config.json stays the
+  // authoritative store for the out-of-process CLI/boot-guard: the settings doc
+  // is seeded from it and every namespace change mirrors back into it. All of
+  // this is best-effort — a settings/llm failure must never break the guard.
+  ctx.inject(['settings'], (sctx) => {
+    try {
+      const cfg = readGuardConfig()
+      const scope = sctx.settings.register('guard', z.object({
+        keepSnapshots: z.number().min(MIN_KEEP_SNAPSHOTS).max(MAX_KEEP_SNAPSHOTS).default(cfg.keepSnapshots),
+      }), { base: { keepSnapshots: cfg.keepSnapshots } })
+      guardSettingsScope = scope
+      // seed the settings document from config.json so the card matches the CLI
+      void scope.update({ keepSnapshots: cfg.keepSnapshots }).catch(() => {})
+      // mirror every settings change back to config.json (CLI/boot-guard truth)
+      scope.watch(() => {
+        try {
+          const v = scope.get()
+          if (v && Number.isFinite(v.keepSnapshots)) setKeepSnapshots(v.keepSnapshots)
+        } catch { /* best effort */ }
+      })
+      // Expose the namespace to the web configuration boundary; without this
+      // directory entry the browser settingsScope binder reports it as
+      // unavailable (same pattern as dsh-vision-router).
+      const llm = ctx.get('llm')
+      if (llm !== undefined) {
+        try {
+          llm.registerConfigurableProviders([{ provider: 'guard', displayName: '备份管理（dsh-plugin-guard）' }])
+        } catch { /* best effort */ }
+      }
+    } catch {
+      // settings unavailable — the guard runs without the namespace
+    }
+    sctx.effect(() => () => { guardSettingsScope = null }, 'guard: settings scope teardown')
+  })
 }
 
 export { readPending, resolveIncidentMarker }

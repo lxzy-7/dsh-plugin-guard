@@ -44,7 +44,7 @@ In short: the guard never *judges* whether a plugin is "good". It guarantees tha
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # From the tarball stored in the repo:
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.2.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.3.0.tgz
 ```
 
 Restart `dsh web`. This is a standard **bundle plugin**: it joins the profile layer stack and takes effect automatically. (Once published to npm, `dsh plugin --profile web add dsh-plugin-guard` also works.)
@@ -64,7 +64,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File node_modules\dsh-plugin-guar
 
 ### Usage
 
-**Settings panel — 备份管理 (Backup Manager).** In the web UI, open **设置 (Settings) → 备份管理**: per-environment snapshot lists, **load a specific backup**, **create a manual snapshot**, and **set how many snapshots each environment keeps (minimum 2)**.
+**Settings panel — 备份管理 (Backup Manager).** In the web UI, open **设置 (Settings) → 备份管理**: per-environment snapshot lists, **load a specific backup**, **create a manual snapshot**, and **set how many snapshots each environment keeps (minimum 2)**. Since v0.3.0 the plugin also registers a **设置 → 插件 → 插件配置** settings card (rc.7 plugin-owned settings surface): it edits the same keep-count through the harness `settings` service (schema-validated, revision-fenced), and the 备份管理 panel plus the CLI stay in sync via `config.json`.
 
 **Agent tools** (registered for every session in the profile):
 
@@ -201,7 +201,7 @@ Guard **不会**静态分析插件代码，也**不会**单独"测试"某个插�
 dsh plugin --profile web add github:lxzy-7/dsh-plugin-guard
 
 # 或从仓库里的安装包：
-dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.2.2.tgz
+dsh plugin --profile web add https://raw.githubusercontent.com/lxzy-7/dsh-plugin-guard/main/dist/dsh-plugin-guard-0.3.0.tgz
 ```
 
 重启 `dsh web`。这是标准 **bundle 插件**：加入 profile 层栈自动生效。(发布到 npm 后 `dsh plugin --profile web add dsh-plugin-guard` 也可用。)
@@ -221,7 +221,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File node_modules\dsh-plugin-guar
 
 ### 使用
 
-**设置面板 — 备份管理。** 网页界面里打开 **设置 → 备份管理**：按环境列出快照、**加载指定备份**、**手动存档**、**设置每个环境保留的快照数量(最少 2)**。
+**设置面板 — 备份管理。** 网页界面里打开 **设置 → 备份管理**：按环境列出快照、**加载指定备份**、**手动存档**、**设置每个环境保留的快照数量(最少 2)**。v0.3.0 起插件还会注册 **设置 → 插件 → 插件配置** 设置卡片（rc.7 插件自有设置表面）：通过 harness 的 `settings` 服务编辑同一保留数量（schema 校验 + revision 冲突保护），与备份管理面板、CLI 通过 `config.json` 保持同步。
 
 **Agent 工具**(profile 内每个会话都会注册)：
 

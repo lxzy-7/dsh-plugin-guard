@@ -1,14 +1,7 @@
 # dsh-plugin-guard: install safety net for DeepSeek Harness.
-# The host-side guard plugin mounts here (no separate Loader row needed;
-# the bundle patch layer applies only while this plugin is installed).
-# guard-api is a second row that only serves the 设置 > 备份管理 HTTP API; it
-# waits for webServer (inject) so it never blocks profiles without a web UI.
+# Single bundle row: tools + incident prompt + 备份管理 HTTP API (registered
+# only when a webServer exists) + the 设置 > 插件 > 插件配置 settings card
+# (rc.7 plugin-owned settings surface). No second apiOnly row is needed.
 - insert:
     - id: guard
       name: 'dsh-plugin-guard'
-    - id: guard-api
-      name: 'dsh-plugin-guard'
-      inject:
-        - webServer
-      config:
-        apiOnly: true
