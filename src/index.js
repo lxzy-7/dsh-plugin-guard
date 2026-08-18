@@ -110,6 +110,37 @@ async function handleKeep(req, res) {
   } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
 }
 
+// ── 客户端渲染心跳 / 崩溃回报（黑屏检测）。rc.7 的客户端渲染失败是纯浏览器
+// 侧事件，服务端 HTTP 仍返回 200；guard 客户端在根槽位渲染成功时 POST
+// /guard/api/booted，在根槽位渲染崩溃时 POST /guard/api/render-error，守护
+// 脚本据此区分"服务已起"与"客户端真的能用"。均为进程内内存标志。──
+let guardClientBooted = false
+let guardRenderError = null // string message; null = 无渲染崩溃
+
+async function handleBooted(req, res) {
+  try {
+    if (req.method === 'POST') {
+      guardClientBooted = true
+      return send(res, { ok: true, booted: true })
+    }
+    send(res, { ok: true, booted: guardClientBooted })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
+async function handleRenderError(req, res) {
+  try {
+    if (req.method === 'POST') {
+      const body = await readBody(req)
+      guardRenderError = (body && typeof body.message === 'string' && body.message !== '')
+        ? body.message : '(client render error)'
+      return send(res, { ok: true, renderError: true })
+    }
+    // GET carries BOTH signals so the boot-guard can confirm health or crash
+    // from this single endpoint.
+    send(res, { ok: true, renderError: guardRenderError !== null, message: guardRenderError ?? '', booted: guardClientBooted })
+  } catch (e) { send(res, { ok: false, error: errMsg(e) }) }
+}
+
 export function apply(ctx) {
   // 1. Incident-alert prompt section.
   const sp = ctx.get('systemPrompt')
@@ -153,6 +184,8 @@ export function apply(ctx) {
       { kind: 'exact', path: '/guard/api/snapshot', handler: handleSnapshot },
       { kind: 'exact', path: '/guard/api/rollback', handler: handleRollback },
       { kind: 'exact', path: '/guard/api/keep', handler: handleKeep },
+      { kind: 'exact', path: '/guard/api/booted', handler: handleBooted },
+      { kind: 'exact', path: '/guard/api/render-error', handler: handleRenderError },
     ]
     for (const route of routes) {
       wctx.effect(() => wctx.webServer.register(route), `guard: ${route.path} route`)

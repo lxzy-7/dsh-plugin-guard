@@ -20,7 +20,9 @@ param(
     [int]$Port = 3080,
     [string]$Profile = "web",
     [string]$HarnessRoot = "",
-    [string]$ServerArgs = ""
+    [string]$ServerArgs = "",
+    [int]$RenderSettleSec = 20,
+    [int]$RenderConfirmSec = 90
 )
 
 $ErrorActionPreference = "Continue"
@@ -112,6 +114,60 @@ function Stop-ServerTree($p) {
     }
 }
 
+function Test-RenderReady([int]$seconds) {
+    # After HTTP is up, confirm the web client actually rendered. The guard
+    # client POSTs /guard/api/booted on a successful root mount and
+    # /guard/api/render-error on a root render crash (rc.7 "page opens but
+    # black screen with an error"). HTTP / alone cannot tell these apart.
+    # - JSON with renderError true  -> "rendercrash" (roll back)
+    # - JSON with booted true       -> "ok" (client really rendered)
+    # - JSON with booted false      -> keep polling (client not rendered yet)
+    # - non-JSON response (the webServer catch-all serves the SPA HTML for
+    #      unmatched paths)         -> "ok": the guard endpoint is not mounted
+    #      (old guard / not installed) -> HTTP-only, old behavior
+    # - deadline reached            -> "unconfirmed" (no heartbeat, no crash:
+    #      the app may be stuck on a boot screen without reporting a root
+    #      error; the caller decides how to treat the ambiguity)
+    $deadline = (Get-Date).AddSeconds($seconds)
+    while ((Get-Date) -lt $deadline) {
+        $resp = $null
+        try {
+            $resp = Invoke-WebRequest -Uri ("http://127.0.0.1:" + $Port + "/guard/api/render-error") -TimeoutSec 2 -UseBasicParsing
+        } catch {
+            $status = $_.Exception.Response.StatusCode
+            if ($status -eq [System.Net.HttpStatusCode]::NotFound) { return "ok" }
+            # other failures (busy/recovering): keep polling
+        }
+        if ($resp) {
+            $parsed = $null
+            try { $parsed = $resp.Content | ConvertFrom-Json } catch { $parsed = $null }
+            $hasSignal = ($null -ne $parsed) -and (
+                ($parsed.PSObject.Properties.Name -contains 'renderError') -or
+                ($parsed.PSObject.Properties.Name -contains 'booted'))
+            if (-not $hasSignal) { return "ok" }  # not the guard endpoint (HTML fallback / old guard)
+            if ($parsed.renderError) { return "rendercrash" }
+            if ($parsed.booted) { return "ok" }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    return "unconfirmed"
+}
+
+function Confirm-RenderReady {
+    # Two-phase render confirmation. Phase 1 is a short settle; if it yields
+    # nothing, phase 2 waits much longer because the launcher (launch.vbs)
+    # opens the browser only AFTER the server answers — so a healthy render can
+    # legitimately arrive tens of seconds after HTTP 200.
+    # Returns "ok" | "rendercrash" | "unconfirmed".
+    # -RenderSettleSec 0 disables the render check (headless/server-only boots).
+    if ($RenderSettleSec -le 0) { return "ok" }
+    $r = Test-RenderReady $RenderSettleSec
+    if ($r -ne "unconfirmed") { return $r }
+    if ($RenderConfirmSec -le 0) { return "unconfirmed" }
+    Log ("client readiness unconfirmed after " + $RenderSettleSec + " s; extending " + $RenderConfirmSec + " s for the launcher to open the page")
+    return Test-RenderReady $RenderConfirmSec
+}
+
 Log "=== boot guard start ==="
 if (Test-Health) { Log "already healthy"; Set-Status "OK" "already-running"; exit 0 }
 
@@ -121,13 +177,26 @@ $proc = Start-Server $serverOut $serverErr
 Log "started server (pid $($proc.Id))"
 $boot = Wait-Healthy $FirstWaitSec $proc
 if ($boot -eq "ok") {
-    Log "boot ok on first attempt"
-    Set-Status "OK" "first-attempt"
-    Wait-Process -Id $proc.Id
-    Log "server tree exited; boot guard done"
-    exit 0
+    # HTTP is up; confirm the web client actually rendered (rc.7 black-screen /
+    # stuck-boot detection). A render crash or a never-ready client rolls back
+    # just like a dead server.
+    $render = Confirm-RenderReady
+    if ($render -eq "ok") {
+        Log "boot ok on first attempt"
+        Set-Status "OK" "first-attempt"
+        Wait-Process -Id $proc.Id
+        Log "server tree exited; boot guard done"
+        exit 0
+    }
+    if ($render -eq "rendercrash") {
+        Log "client render crash detected; stopping and rolling back"
+    } else {
+        Log "client readiness unconfirmed after up to $($RenderSettleSec + $RenderConfirmSec) s (no render heartbeat, no render crash) - treating as failed and rolling back"
+    }
+    $boot = "rendercrash"
+} else {
+    Log "server not healthy ($boot) after up to $FirstWaitSec s; stopping and rolling back"
 }
-Log "server not healthy ($boot) after up to $FirstWaitSec s; stopping and rolling back"
 Stop-ServerTree $proc
 
 $null = Invoke-Guard @("rollback", "--good")
@@ -135,6 +204,10 @@ $null = Invoke-Guard @("rollback", "--good")
 $proc2 = Start-Server $serverOut $serverErr
 Log "restarted server (pid $($proc2.Id))"
 $retry = Wait-Healthy $RetryWaitSec $proc2
+if ($retry -eq "ok") {
+    $retryRender = Confirm-RenderReady
+    if ($retryRender -ne "ok") { $retry = "rendercrash" }
+}
 if ($retry -eq "ok") { Set-Status "OK" "rolled-back-retry" }
 else { Stop-ServerTree $proc2; Set-Status "FAILED" ("boot-failed (" + $retry + ")") }
 

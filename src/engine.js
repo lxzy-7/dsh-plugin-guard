@@ -20,6 +20,24 @@ export const DEFAULT_PORT = 3080
  * to keep per category; the oldest are pruned on every snapshot/incident. */
 export const DEFAULT_KEEP_LOGS = 30
 
+/** Resolved DeepSeek Harness (dsh) version, recorded in every snapshot for
+ * provenance. Reads the installed @deepseek-ai/dsh package next to DSH_HOME;
+ * falls back to the root package.json dependency spec. Returns '' when
+ * unresolvable (never throws). */
+export function harnessVersion() {
+  const root = dirname(dshHome())
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'node_modules', '@deepseek-ai', 'dsh', 'package.json'), 'utf8'))
+    if (typeof pkg.version === 'string' && pkg.version !== '') return pkg.version
+  } catch { /* fall through */ }
+  try {
+    const rootPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
+    const spec = rootPkg?.dependencies?.['@deepseek-ai/dsh']
+    if (typeof spec === 'string' && spec !== '') return `spec:${spec}`
+  } catch { /* unresolvable */ }
+  return ''
+}
+
 /** Read the guard settings file ($DSH_HOME/guard/config.json). Never throws;
  * malformed/missing config falls back to defaults. */
 export function readGuardConfig() {
@@ -169,6 +187,7 @@ function writeManifest(dir, profile, tag, reason, files, pnpm) {
     tag,
     reason,
     files,
+    harness: harnessVersion(),
   }
   if (pnpm) m.pnpm = pnpm
   writeFileSync(join(dir, 'manifest.json'), `${JSON.stringify(m, null, 2)}\n`, 'utf8')

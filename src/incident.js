@@ -8,7 +8,7 @@ import { TextDecoder } from 'node:util'
 import { join } from 'node:path'
 import { guardDir, guardLogsDir, pendingMarkerPath, profileDir, SNAPSHOT_FILES } from './layout.js'
 import {
-  listProfiles, listSnapshots, resolveSnapshotDir, sha256File, resolveGuardPort, pruneGuardArtifacts,
+  listProfiles, listSnapshots, resolveSnapshotDir, sha256File, resolveGuardPort, pruneGuardArtifacts, harnessVersion,
 } from './engine.js'
 
 const _decUtf8 = new TextDecoder('utf-8', { fatal: true })
@@ -145,6 +145,7 @@ export async function buildIncidentReport(kind, { port = resolveGuardPort(), noM
   lines.push(`- 类型: ${kind}`)
   lines.push(`- 时间: ${new Date().toISOString()}`)
   lines.push(`- node: ${process.version}`)
+  lines.push(`- dsh 版本: ${harnessVersion() || '(未知)'}`)
   lines.push(`- DSH 根目录: ${process.env.DSH_HOME ?? '(默认 ~/.dsh)'}`)
   lines.push(`- 健康状态: http://127.0.0.1:${port}/ -> ${healthy ? '正常' : '异常'}`)
   lines.push(`- 上次启动: ${readLastBoot()}`, '')
@@ -189,6 +190,24 @@ export async function buildIncidentReport(kind, { port = resolveGuardPort(), noM
     lines.push(`- ${s.stamp} [${s.tag}] ${s.reason}`)
   }
   lines.push('')
+
+  // DSH 版本变化检测：profile 回滚无法撤销 DSH 根目录(node_modules)的更新，
+  // 若启动失败由 DSH 更新引起，明确提示用户恢复之前的 DSH 版本。
+  const curHarness = harnessVersion()
+  const goodDir = resolveSnapshotDir('web', { good: true })
+  let snapHarness = ''
+  if (goodDir) {
+    try {
+      const m = JSON.parse(readFileSync(join(goodDir, 'manifest.json'), 'utf8'))
+      if (typeof m.harness === 'string') snapHarness = m.harness
+    } catch { /* ignore */ }
+  }
+  if (curHarness && snapHarness && curHarness !== snapHarness) {
+    lines.push('## ⚠️ DSH 版本变化（可能与本故障有关）', '')
+    lines.push(`- 最近良好快照时的 dsh: ${snapHarness}`)
+    lines.push(`- 当前 dsh: ${curHarness}`)
+    lines.push('- **profile 回滚无法撤销 DSH 根目录(node_modules)的更新**。若启动失败由 DSH 更新引起，请恢复之前的 DSH 版本后再试。', '')
+  }
 
   writeFileSync(reportPath, lines.join('\n'), 'utf8')
   if (!noMarker) writePending(kind, reportPath)
